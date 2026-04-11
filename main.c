@@ -137,19 +137,11 @@ void ler_entrada(const char *nome_arquivo) {
         exit(1);
     }
     
-    char buffer[256];
-    // Lê a config ignorando as strings (rótulos)
-    if (fscanf(file, "%s %d", buffer, &CAPACIDADE) != 2) {
-        printf("Erro ao ler Capacidade do problema.\n");
+    // Lê N (Número de itens) e PMAX (Capacidade máxima)
+    if (fscanf(file, "%d %d", &NUM_ITEMS, &CAPACIDADE) != 2) {
+        printf("Erro ao ler parametros N e PMAX.\n");
         exit(1);
     }
-    if (fscanf(file, "%s %d", buffer, &NUM_ITEMS) != 2) {
-        printf("Erro ao ler Numero de Itens do problema.\n");
-        exit(1);
-    }
-    
-    // Pula a linha de cabeçalho "Valor Peso"
-    fscanf(file, "%s %s", buffer, buffer);
     
     itens = (Item*)malloc(NUM_ITEMS * sizeof(Item));
     for (int i = 0; i < NUM_ITEMS; i++) {
@@ -157,14 +149,15 @@ void ler_entrada(const char *nome_arquivo) {
             printf("Erro ao ler item %d.\n", i);
         }
     }
+    // A solução ótima ao final do arquivo é ignorada pois só lemos até NUM_ITEMS
     fclose(file);
 }
 
 int main(int argc, char *argv[]) {
     // Valida os parametros da linha de comando
-    if (argc < 5) {
-        printf("Uso: %s <tamanho_populacao> <taxa_mutacao> <max_geracoes> <num_threads>\n", argv[0]);
-        printf("Exemplo: %s 100 0.05 1000 1\n", argv[0]);
+    if (argc < 6) {
+        printf("Uso: %s <tamanho_populacao> <taxa_mutacao> <max_geracoes> <num_threads> <arquivo_instancia>\n", argv[0]);
+        printf("Exemplo: %s 100 0.05 1000 1 kp_instances/large_scale/knapPI_1_100_1000_1\n", argv[0]);
         return 1;
     }
     
@@ -172,11 +165,15 @@ int main(int argc, char *argv[]) {
     MUTATION_RATE = atof(argv[2]);
     MAX_GEN = atoi(argv[3]);
     NUM_THREADS = atoi(argv[4]);
+    const char *arquivo_instancia = argv[5];
     
-    srand((unsigned int)time(NULL));
+    // Seed melhorada com timer de alta precisão para evitar repetição entre execuções coladas
+    LARGE_INTEGER seed_time;
+    QueryPerformanceCounter(&seed_time);
+    srand((unsigned int)(time(NULL) ^ seed_time.QuadPart ^ GetCurrentProcessId()));
     
     // Ler itens arquivo
-    ler_entrada("entrada.txt");
+    ler_entrada(arquivo_instancia);
     
     // Estruturas de tempo de alta precisão
     LARGE_INTEGER frequency, start, end;
