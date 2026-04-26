@@ -1,0 +1,8 @@
+Instalar biblioteca pthreads:
+mingw-get install pthreads
+
+Para compilar:
+gcc -O3 -fopenmp main.c -o mochila.exe
+
+Para executar:
+.\mochila.exe 1000 0.05 5000 4 kp_instances/large_scale/knapPI_3_500_1000_1
