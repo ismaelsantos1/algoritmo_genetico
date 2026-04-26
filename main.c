@@ -3,6 +3,8 @@
 #include <time.h>
 #include <windows.h>
 #include <stdbool.h>
+#include <omp.h>
+#include <stdint.h>
 
 // Estruturas
 typedef struct {
@@ -32,13 +34,23 @@ double get_time_ms(LARGE_INTEGER start, LARGE_INTEGER end, LARGE_INTEGER freq) {
     return (double)(end.QuadPart - start.QuadPart) * 1000.0 / freq.QuadPart;
 }
 
-int random_int(int min, int max) {
-    if (max <= min) return min;
-    return min + rand() % (max - min + 1);
+// RNG Thread-safe usando Xorshift32
+uint32_t xorshift32(uint32_t *state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
 }
 
-float random_float() {
-    return (float)rand() / (float)RAND_MAX;
+int random_int_r(int min, int max, uint32_t *seed) {
+    if (max <= min) return min;
+    return min + (xorshift32(seed) % (max - min + 1));
+}
+
+float random_float_r(uint32_t *seed) {
+    return (float)xorshift32(seed) / (float)UINT32_MAX;
 }
 
 Individuo criar_individuo() {
@@ -69,19 +81,24 @@ void avaliar_individuo(Individuo *ind) {
 }
 
 void init_populacao(Individuo *pop) {
-    for (int i = 0; i < POP_SIZE; i++) {
-        pop[i] = criar_individuo();
-        for (int j = 0; j < NUM_ITEMS; j++) {
-            pop[i].genes[j] = random_int(0, 1);
+    #pragma omp parallel
+    {
+        uint32_t seed = (uint32_t)(time(NULL) ^ (omp_get_thread_num() + 1));
+        #pragma omp for
+        for (int i = 0; i < POP_SIZE; i++) {
+            pop[i] = criar_individuo();
+            for (int j = 0; j < NUM_ITEMS; j++) {
+                pop[i].genes[j] = random_int_r(0, 1, &seed);
+            }
+            avaliar_individuo(&pop[i]);
         }
-        avaliar_individuo(&pop[i]);
     }
 }
 
-int selecao_torneio(Individuo *pop) {
-    int melhor_idx = random_int(0, POP_SIZE - 1);
+int selecao_torneio(Individuo *pop, uint32_t *seed) {
+    int melhor_idx = random_int_r(0, POP_SIZE - 1, seed);
     for (int i = 1; i < 3; i++) { // Torneio de tamanho 3
-        int idx = random_int(0, POP_SIZE - 1);
+        int idx = random_int_r(0, POP_SIZE - 1, seed);
         if (pop[idx].fitness > pop[melhor_idx].fitness) {
             melhor_idx = idx;
         }
@@ -89,23 +106,23 @@ int selecao_torneio(Individuo *pop) {
     return melhor_idx;
 }
 
-void crossover(Individuo p1, Individuo p2, Individuo *f1, Individuo *f2) {
-    int ponto = random_int(1, NUM_ITEMS - 1); 
+void crossover(Individuo p1, Individuo p2, Individuo *f1, Individuo *f2, uint32_t *seed) {
+    int ponto = random_int_r(1, NUM_ITEMS - 1, seed); 
     
     for (int i = 0; i < NUM_ITEMS; i++) {
         if (i < ponto) {
             f1->genes[i] = p1.genes[i];
-            f2->genes[i] = p2.genes[i];
+            if (f2) f2->genes[i] = p2.genes[i];
         } else {
             f1->genes[i] = p2.genes[i];
-            f2->genes[i] = p1.genes[i];
+            if (f2) f2->genes[i] = p1.genes[i];
         }
     }
 }
 
-void mutacao(Individuo *ind) {
+void mutacao(Individuo *ind, uint32_t *seed) {
     for (int i = 0; i < NUM_ITEMS; i++) {
-        if (random_float() < MUTATION_RATE) {
+        if (random_float_r(seed) < MUTATION_RATE) {
             ind->genes[i] = !ind->genes[i];
         }
     }
@@ -113,9 +130,20 @@ void mutacao(Individuo *ind) {
 
 int pegar_melhor_individuo(Individuo *pop) {
     int melhor = 0;
-    for (int i = 1; i < POP_SIZE; i++) {
-        if (pop[i].fitness > pop[melhor].fitness) {
-            melhor = i;
+    #pragma omp parallel
+    {
+        int local_melhor = 0;
+        #pragma omp for nowait
+        for (int i = 1; i < POP_SIZE; i++) {
+            if (pop[i].fitness > pop[local_melhor].fitness) {
+                local_melhor = i;
+            }
+        }
+        #pragma omp critical
+        {
+            if (pop[local_melhor].fitness > pop[melhor].fitness) {
+                melhor = local_melhor;
+            }
         }
     }
     return melhor;
@@ -167,6 +195,8 @@ int main(int argc, char *argv[]) {
     NUM_THREADS = atoi(argv[4]);
     const char *arquivo_instancia = argv[5];
     
+    omp_set_num_threads(NUM_THREADS);
+    
     // Seed melhorada com timer de alta precisão para evitar repetição entre execuções coladas
     LARGE_INTEGER seed_time;
     QueryPerformanceCounter(&seed_time);
@@ -205,33 +235,31 @@ int main(int argc, char *argv[]) {
         // Elitismo clássico: Preserva o melhor indivíduo da geração na próxima (índice 0)
         copiar_individuo(&nova_populacao[0], &populacao[idx_melhor]);
         
-        int i = 1;
-        while (i < POP_SIZE) {
-            int p1 = selecao_torneio(populacao);
-            int p2 = selecao_torneio(populacao);
-            
-            Individuo f1 = criar_individuo();
-            Individuo f2 = criar_individuo();
-            
-            crossover(populacao[p1], populacao[p2], &f1, &f2);
-            
-            mutacao(&f1);
-            avaliar_individuo(&f1);
-            copiar_individuo(&nova_populacao[i], &f1);
-            i++;
-            
-            if (i < POP_SIZE) {
-                mutacao(&f2);
-                avaliar_individuo(&f2);
-                copiar_individuo(&nova_populacao[i], &f2);
-                i++;
+        #pragma omp parallel
+        {
+            uint32_t seed = (uint32_t)(time(NULL) ^ (omp_get_thread_num() + 1) ^ g);
+            #pragma omp for
+            for (int i = 1; i < POP_SIZE; i += 2) {
+                int p1 = selecao_torneio(populacao, &seed);
+                int p2 = selecao_torneio(populacao, &seed);
+                
+                Individuo *f1 = &nova_populacao[i];
+                Individuo *f2 = (i + 1 < POP_SIZE) ? &nova_populacao[i+1] : NULL;
+                
+                crossover(populacao[p1], populacao[p2], f1, f2, &seed);
+                
+                mutacao(f1, &seed);
+                avaliar_individuo(f1);
+                
+                if (f2) {
+                    mutacao(f2, &seed);
+                    avaliar_individuo(f2);
+                }
             }
-            
-            free(f1.genes);
-            free(f2.genes);
         }
         
-        // Cópia da população
+        // Cópia da população para a próxima geração
+        #pragma omp parallel for
         for (int i = 0; i < POP_SIZE; i++) {
             copiar_individuo(&populacao[i], &nova_populacao[i]);
         }
